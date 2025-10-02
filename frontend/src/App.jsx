@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Fix for default markers in react-leaflet
+// Fix default marker icons
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -11,40 +11,60 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-function LocationTracker({ points, onProximityAlert }) {
+function LocationTracker({ points, onProximityAlert, onSpeedUpdate, speedLimit }) {
   const map = useMap();
   const [userLocation, setUserLocation] = useState(null);
+  const [lastPosition, setLastPosition] = useState(null);
 
-  // Calculate distance between two coordinates using Haversine formula
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371000; // Earth's radius in meters
+    const R = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) *
+      Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   };
 
-  const checkProximity = (userLat, userLng) => {
+  const checkProximityAndSpeed = (userLat, userLng, userSpeed) => {
+    let nearestPoint = null;
+    let minDistance = Infinity;
+
+    // Find the nearest point within 10m
     for (const point of points) {
       const distance = calculateDistance(userLat, userLng, point.lat, point.lng);
-      if (distance <= 100) { // 100 meters
+      if (distance <= 10 && distance < minDistance) {
+        minDistance = distance;
+        nearestPoint = { ...point, distance };
+      }
+    }
+
+    // If within 10m of any point
+    if (nearestPoint) {
+      // Check if speeding near the point
+      if (userSpeed > speedLimit) {
         onProximityAlert({
-          type: point.type,
-          name: point.name,
-          distance: Math.round(distance)
+          type: 'Speed Alert',
+          name: `⚠️ SLOW DOWN! Speed: ${userSpeed.toFixed(1)} km/h (Max: ${speedLimit} km/h) near ${nearestPoint.name}`,
+          distance: Math.round(nearestPoint.distance)
         });
-        break;
+      } else {
+        // Show normal proximity alert if not speeding
+        onProximityAlert({
+          type: nearestPoint.type,
+          name: nearestPoint.name,
+          distance: Math.round(nearestPoint.distance)
+        });
       }
     }
   };
 
   useEffect(() => {
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser');
+      alert('Geolocation not supported.');
       return;
     }
 
@@ -53,16 +73,29 @@ function LocationTracker({ points, onProximityAlert }) {
         const { latitude, longitude } = position.coords;
         const newLocation = { lat: latitude, lng: longitude };
         setUserLocation(newLocation);
-        
-        // Center map on user location
+
+        let userSpeed = 0;
+        if (lastPosition) {
+          const distance = calculateDistance(
+            lastPosition.lat,
+            lastPosition.lng,
+            newLocation.lat,
+            newLocation.lng
+          );
+          const timeDiff = (Date.now() - lastPosition.time) / 1000;
+          userSpeed = (distance / timeDiff) * 3.6; // km/h
+        }
+        onSpeedUpdate(userSpeed.toFixed(1));
+
+        setLastPosition({ ...newLocation, time: Date.now() });
         map.setView([latitude, longitude], 18);
-        
-        // Check proximity to points
-        checkProximity(latitude, longitude);
+
+        // Check proximity and speed only when near a point
+        checkProximityAndSpeed(latitude, longitude, userSpeed);
       },
       (error) => {
         console.error('Error getting location:', error);
-        alert('Error getting your location. Please enable location services.');
+        alert('Enable location services.');
       },
       {
         enableHighAccuracy: true,
@@ -72,12 +105,12 @@ function LocationTracker({ points, onProximityAlert }) {
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [map, points]);
+  }, [map, points, lastPosition, speedLimit]);
 
   return userLocation ? (
     <Marker position={userLocation}>
       <Popup>
-        <strong>Your current location</strong><br />
+        <strong>Your Location</strong><br />
         Lat: {userLocation.lat.toFixed(6)}<br />
         Lng: {userLocation.lng.toFixed(6)}
       </Popup>
@@ -88,51 +121,35 @@ function LocationTracker({ points, onProximityAlert }) {
 function App() {
   const [points, setPoints] = useState([]);
   const [alert, setAlert] = useState(null);
+  const [speed, setSpeed] = useState(0);
+  const speedLimit = 5; // km/h
 
   useEffect(() => {
-    // Fetch campus points from backend
     fetch('/api/points')
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        return response.json();
-      })
-      .then(data => {
-        console.log('Fetched points:', data);
-        setPoints(data);
-      })
-      .catch(error => {
-        console.error('Error fetching points:', error);
-        // Use default points if backend is not available
+      .then(res => res.ok ? res.json() : Promise.reject('Network error'))
+      .then(data => setPoints(data))
+      .catch(() => {
         setPoints([
-          {
-            "name": "Main Gate Speed Breaker",
-            "type": "Speed Breaker",
-            "lat": 30.7333,
-            "lng": 76.7794
-          },
-          {
-            "name": "Library CCTV",
-            "type": "CCTV",
-            "lat": 30.7340,
-            "lng": 76.7800
-          }
+          { name: "Hostel Camera-1", type: "CCTV", lat: 30.8627650, lng: 75.8607660 },
+          { name: "Accidental Prone Area", type: "Speed Breaker", lat: 30.8611150, lng: 75.8610131 },
+          { name: "Lipton Camera-2", type: "CCTV", lat: 30.8600959, lng: 75.8610409 },
+          { name: "MBA Block Construction Area", type: "Speed Breaker", lat: 30.8601031, lng: 75.8603610 }
         ]);
       });
   }, []);
 
   const handleProximityAlert = (alertInfo) => {
     setAlert(alertInfo);
-    setTimeout(() => setAlert(null), 5000); // Clear alert after 5 seconds
+    setTimeout(() => setAlert(null), 5000);
   };
 
-  // Default coordinates (GNE Campus approximate location)
-  const defaultCenter = [30.7333, 76.7794];
+  const handleSpeedUpdate = (userSpeed) => setSpeed(userSpeed);
+
+  const defaultCenter = [30.8627650, 75.8607660];
 
   return (
     <div style={{ height: '100vh', width: '100%', position: 'relative' }}>
-      {/* Alert Banner */}
+      {/* Alert */}
       {alert && (
         <div style={{
           position: 'absolute',
@@ -140,7 +157,8 @@ function App() {
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 1000,
-          backgroundColor: alert.type === 'CCTV' ? '#ffeb3b' : '#ff9800',
+          backgroundColor: alert.type === 'CCTV' ? '#ffeb3b' :
+                           alert.type === 'Speed Alert' ? '#f44336' : '#ff9800',
           padding: '15px 25px',
           borderRadius: '8px',
           border: '3px solid #333',
@@ -149,36 +167,30 @@ function App() {
           textAlign: 'center',
           boxShadow: '0 4px 8px rgba(0,0,0,0.3)'
         }}>
-          ⚠️ {alert.type} Ahead: {alert.name} ({alert.distance}m away)
+          ⚠️ {alert.type}: {alert.name} {alert.distance > 0 ? `(${alert.distance}m away)` : ''}
         </div>
       )}
 
       {/* Map */}
-      <MapContainer 
-        center={defaultCenter} 
-        zoom={16} 
-        style={{ height: '100%', width: '100%' }}
-        scrollWheelZoom={true}
-      >
+      <MapContainer center={defaultCenter} zoom={16} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          attribution='&copy; OpenStreetMap contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        
-        {/* Campus Points Markers */}
-        {points.map((point, index) => (
-          <Marker key={index} position={[point.lat, point.lng]}>
+        {points.map((point, i) => (
+          <Marker key={i} position={[point.lat, point.lng]}>
             <Popup>
               <strong>{point.name}</strong><br />
-              Type: {point.type}<br />
-              Lat: {point.lat}<br />
-              Lng: {point.lng}
+              Type: {point.type}
             </Popup>
           </Marker>
         ))}
-        
-        {/* User Location Tracker */}
-        <LocationTracker points={points} onProximityAlert={handleProximityAlert} />
+        <LocationTracker
+          points={points}
+          onProximityAlert={handleProximityAlert}
+          onSpeedUpdate={handleSpeedUpdate}
+          speedLimit={speedLimit}
+        />
       </MapContainer>
 
       {/* Info Panel */}
@@ -195,32 +207,16 @@ function App() {
         border: '2px solid #333'
       }}>
         <h3 style={{ margin: '0 0 10px 0', color: '#333' }}>🚗 Highway Halo</h3>
-        <p style={{ margin: '5px 0', fontSize: '14px' }}>Alerts within 100m:</p>
+        <p style={{ margin: '5px 0', fontSize: '14px' }}>Alerts within 10m:</p>
         <ul style={{ margin: '5px 0', paddingLeft: '20px', fontSize: '13px' }}>
-          <li>🚧 Speed Breakers</li>
+          <li>🚧 Speed Breakers / Construction</li>
           <li>🎥 CCTV Cameras</li>
+          <li>⚡ Speed Limit: {speedLimit} km/h</li>
         </ul>
-        <div style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
-          <strong>GNE Campus Pilot Project</strong>
-        </div>
+        <p style={{ marginTop: '10px', fontSize: '14px', fontWeight: 'bold' }}>
+          Current Speed: {speed} km/h
+        </p>
       </div>
-
-      {/* Loading Indicator */}
-      {points.length === 0 && (
-        <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          zIndex: 1000,
-          backgroundColor: 'white',
-          padding: '20px',
-          borderRadius: '8px',
-          textAlign: 'center'
-        }}>
-          Loading map and points...
-        </div>
-      )}
     </div>
   );
 }
