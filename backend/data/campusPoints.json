@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Hostel Camera-1",
+    "type": "CCTV",
+    "lat":30.8627650,
+    "lng": 75.8607660
+  },
+  {
+    "name": "Accidental Prone Area",
+    "type": "Speed Breaker",
+    "lat": 30.8611150,
+    "lng": 75.8610131
+  },
+  {
+    "name": "Lipton Camera-2",
+    "type": "CCTV",
+    "lat": 30.8600959,
+    "lng": 75.8610409
+  },
+  {
+    "name": "MBA Block Contsruction Area",
+    "type": "Speed Breaker",
+    "lat": 30.8601031,
+    "lng": 75.8603610
+  }
+]
